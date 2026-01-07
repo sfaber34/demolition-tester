@@ -48,13 +48,24 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "consistency":
         base_url = args.base_url or build_base_url(host=args.host, port=args.port)
+
+        def progress_cb(done: int, total: int) -> None:
+            if total <= 0:
+                return
+            pct = int(round((done / total) * 100))
+            msg = f"\rProgress: {done}/{total} ({pct}%)"
+            print(msg, end="", file=sys.stderr, flush=True)
+
         ok, summary = test_consistency(
             args.seed,
             args.n_runs,
             base_url=base_url,
             timeout_s=args.timeout,
             sleep_s=args.sleep,
+            progress_cb=None if args.as_json else progress_cb,
         )
+        if not args.as_json:
+            print("", file=sys.stderr)  # newline after progress line
 
         if args.as_json:
             print(json.dumps(summary, indent=2, sort_keys=True))

@@ -14,6 +14,8 @@ python3 -m demolition_tester consistency <n_runs> <seed>
 python3 -m demolition_tester consistency 50 123
 ```
 
+While running, it prints a percent-complete progress line to stderr.
+
 Change the port (pick one):
 
 ```bash

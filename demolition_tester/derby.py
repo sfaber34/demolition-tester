@@ -7,7 +7,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 
 DEFAULT_HOST = "localhost"
@@ -119,6 +119,7 @@ def test_consistency(
     port: Optional[int] = None,
     timeout_s: float = DEFAULT_TIMEOUT_S,
     sleep_s: float = 0.0,
+    progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> Tuple[bool, Dict[str, Any]]:
     """
     Runs the same seed N times and checks if results always match (deep equality).
@@ -134,6 +135,8 @@ def test_consistency(
 
     first = fetch_outcome(seed, base_url=base_url, timeout_s=timeout_s)
     first_sig = _canonical_json(first)
+    if progress_cb is not None:
+        progress_cb(1, n_runs)
 
     mismatches = 0
     mismatch_example: Optional[Dict[str, Any]] = None
@@ -154,6 +157,8 @@ def test_consistency(
                     "expected_canonical": first_sig,
                     "actual_canonical": cur_sig,
                 }
+        if progress_cb is not None:
+            progress_cb(i, n_runs)
 
     elapsed_s = time.time() - start
     summary: Dict[str, Any] = {
