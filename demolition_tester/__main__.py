@@ -5,7 +5,7 @@ import json
 import os
 import sys
 
-from .derby import DEFAULT_TIMEOUT_S, build_base_url, gametime_stats, test_consistency
+from .derby import DEFAULT_TIMEOUT_S, build_base_url, gametime_stats, test_consistency, winrate_stats
 
 
 def _env_default(name: str, fallback: str | None = None) -> str | None:
@@ -68,6 +68,30 @@ def main(argv: list[str] | None = None) -> int:
         help="Print JSON output (machine readable)",
     )
 
+    p_wr = sub.add_parser("winrate", help="Run N games with random seeds and print winner percentages (including draws)")
+    p_wr.add_argument("n_runs", type=int, help="Number of runs")
+    p_wr.add_argument("--base-url", default=_env_default("DERBY_BASE_URL"), help="Override full base URL")
+    p_wr.add_argument("--host", default=_env_default("DERBY_HOST", "localhost"), help="Host (default: localhost)")
+    p_wr.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Port (default: env DERBY_PORT or 3000)",
+    )
+    p_wr.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT_S,
+        help=f"HTTP timeout seconds (default: {DEFAULT_TIMEOUT_S:g})",
+    )
+    p_wr.add_argument("--sleep", type=float, default=0.0, help="Sleep seconds between runs (default: 0)")
+    p_wr.add_argument(
+        "--json",
+        dest="as_json",
+        action="store_true",
+        help="Print JSON output (machine readable)",
+    )
+
     args = parser.parse_args(argv)
 
     if args.cmd == "consistency":
@@ -97,6 +121,9 @@ def main(argv: list[str] | None = None) -> int:
             status = "CONSISTENT" if ok else "INCONSISTENT"
             print(f"{status}: seed={summary['seed']} runs={summary['n_runs']} mismatches={summary['mismatches']}")
             print(f"base_url={summary['base_url']}")
+            if "bad_state" in summary and summary["bad_state"]["count"] > 0:
+                bs = summary["bad_state"]
+                print(f"bad_state: count={bs['count']} seeds={bs['seeds']}")
             if "first_seed_hash" in summary and summary["first_seed_hash"] is not None:
                 print(f"first_seed_hash={summary['first_seed_hash']}")
             if "mismatch_example" in summary:
@@ -132,6 +159,9 @@ def main(argv: list[str] | None = None) -> int:
         stats = out["stats"]
         print(f"base_url={out['base_url']}")
         print(f"runs={out['n_runs']} elapsed_s={out['elapsed_s']:.3f}")
+        if "bad_state" in out and out["bad_state"]["count"] > 0:
+            bs = out["bad_state"]
+            print(f"bad_state: count={bs['count']} seeds={bs['seeds']}")
         print("game_time_seconds:")
         print(f"  min  {stats['min_s']:.3f}  seed={stats['min_seed']}")
         print(f"  p1   {stats['p1_s']:.3f}")
@@ -142,6 +172,44 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  p90  {stats['p90_s']:.3f}")
         print(f"  p99  {stats['p99_s']:.3f}")
         print(f"  max  {stats['max_s']:.3f}  seed={stats['max_seed']}")
+        return 0
+
+    if args.cmd == "winrate":
+        base_url = args.base_url or build_base_url(host=args.host, port=args.port)
+
+        def progress_cb(done: int, total: int) -> None:
+            if total <= 0:
+                return
+            pct = int(round((done / total) * 100))
+            msg = f"\rProgress: {done}/{total} ({pct}%)"
+            print(msg, end="", file=sys.stderr, flush=True)
+
+        out = winrate_stats(
+            args.n_runs,
+            base_url=base_url,
+            timeout_s=args.timeout,
+            sleep_s=args.sleep,
+            progress_cb=None if args.as_json else progress_cb,
+        )
+        if not args.as_json:
+            print("", file=sys.stderr)  # newline after progress line
+
+        if args.as_json:
+            print(json.dumps(out, indent=2, sort_keys=True))
+            return 0
+
+        print(f"base_url={out['base_url']}")
+        print(f"runs={out['n_runs']} elapsed_s={out['elapsed_s']:.3f}")
+        if "bad_state" in out and out["bad_state"]["count"] > 0:
+            bs = out["bad_state"]
+            print(f"bad_state: count={bs['count']} seeds={bs['seeds']}")
+        print("winrate:")
+        for row in out["breakdown"]:
+            print(f"  {row['winner']}: {row['pct']:.2f}% ({row['count']})")
+        if out.get("other_breakdown"):
+            print("unexpected_winners:")
+            for row in out["other_breakdown"]:
+                print(f"  {row['winner']}: {row['pct']:.2f}% ({row['count']})")
         return 0
 
     parser.error("Unknown command")

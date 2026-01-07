@@ -8,7 +8,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from collections import Counter
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 
 DEFAULT_HOST = "localhost"
@@ -51,6 +52,21 @@ def _canonical_json(obj: Any) -> str:
     Deterministic string representation for deep equality checks.
     """
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _is_bad_state(outcome: Dict[str, Any]) -> bool:
+    """
+    Bad state definition (per requirements):
+    - "completed": false
+    - and "phase" != "gameover"
+    """
+    completed = outcome.get("completed")
+    phase = outcome.get("phase")
+    return completed is False and phase != "gameover"
+
+
+def _bad_state_summary(count: int, seeds: Set[int]) -> Dict[str, Any]:
+    return {"count": int(count), "seeds": sorted(seeds)}
 
 
 def _percentile_linear(sorted_vals: List[float], p: float) -> float:
@@ -166,6 +182,12 @@ def test_consistency(
     if progress_cb is not None:
         progress_cb(1, n_runs)
 
+    bad_state_count = 0
+    bad_state_seeds: Set[int] = set()
+    if _is_bad_state(first):
+        bad_state_count += 1
+        bad_state_seeds.add(int(seed))
+
     mismatches = 0
     mismatch_example: Optional[Dict[str, Any]] = None
     start = time.time()
@@ -175,6 +197,9 @@ def test_consistency(
             time.sleep(sleep_s)
         cur = fetch_outcome(seed, base_url=base_url, timeout_s=timeout_s)
         cur_sig = _canonical_json(cur)
+        if _is_bad_state(cur):
+            bad_state_count += 1
+            bad_state_seeds.add(int(seed))
         if cur_sig != first_sig:
             mismatches += 1
             if mismatch_example is None:
@@ -196,6 +221,7 @@ def test_consistency(
         "mismatches": mismatches,
         "elapsed_s": elapsed_s,
         "first_seed_hash": first.get("seed"),
+        "bad_state": _bad_state_summary(bad_state_count, bad_state_seeds),
     }
     if mismatch_example is not None:
         summary["mismatch_example"] = mismatch_example
@@ -228,6 +254,8 @@ def gametime_stats(
     seeds: List[int] = []
     min_pair: Optional[Tuple[float, int]] = None  # (time_ms, seed)
     max_pair: Optional[Tuple[float, int]] = None  # (time_ms, seed)
+    bad_state_count = 0
+    bad_state_seeds: Set[int] = set()
     start = time.time()
 
     for i in range(1, n_runs + 1):
@@ -236,6 +264,9 @@ def gametime_stats(
 
         seed = _rand_seed_int()
         data = fetch_outcome(seed, base_url=base_url, timeout_s=timeout_s)
+        if _is_bad_state(data):
+            bad_state_count += 1
+            bad_state_seeds.add(seed)
         if "gameTimeMs" not in data:
             raise RuntimeError(f"Missing 'gameTimeMs' in response for seed={seed}. Keys: {sorted(data.keys())}")
         try:
@@ -275,9 +306,83 @@ def gametime_stats(
         "base_url": base_url,
         "n_runs": int(n_runs),
         "elapsed_s": elapsed_s,
+        "bad_state": _bad_state_summary(bad_state_count, bad_state_seeds),
         "stats": stats,
         # helpful for debugging/repro if anything looks odd; keep small-ish
         "example_seeds": seeds[: min(10, len(seeds))],
+    }
+
+
+def winrate_stats(
+    n_runs: int,
+    *,
+    base_url: Optional[str] = None,
+    host: str = DEFAULT_HOST,
+    port: Optional[int] = None,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+    sleep_s: float = 0.0,
+    progress_cb: Optional[Callable[[int, int], None]] = None,
+) -> Dict[str, Any]:
+    """
+    Runs N games with random seeds and returns winner breakdown.
+
+    Winner is bucketed by winner.id when present; draws are tracked when winner is null/missing.
+    """
+    if n_runs <= 0:
+        raise ValueError("n_runs must be > 0")
+
+    if base_url is None:
+        base_url = build_base_url(host=host, port=port)
+
+    counts: Counter[str] = Counter()
+    bad_state_count = 0
+    bad_state_seeds: Set[int] = set()
+    start = time.time()
+
+    for i in range(1, n_runs + 1):
+        if sleep_s > 0 and i > 1:
+            time.sleep(sleep_s)
+
+        seed = _rand_seed_int()
+        data = fetch_outcome(seed, base_url=base_url, timeout_s=timeout_s)
+        if _is_bad_state(data):
+            bad_state_count += 1
+            bad_state_seeds.add(seed)
+        winner = data.get("winner", None)
+        if winner is None:
+            counts["draw"] += 1
+        elif isinstance(winner, dict):
+            wid = winner.get("id") or winner.get("name") or "unknown-winner"
+            counts[str(wid)] += 1
+        else:
+            counts["unknown-winner"] += 1
+
+        if progress_cb is not None:
+            progress_cb(i, n_runs)
+
+    elapsed_s = time.time() - start
+
+    ordered_keys = ["car-1", "car-2", "car-3", "car-4", "draw"]
+    breakdown = []
+    for k in ordered_keys:
+        c = counts.get(k, 0)
+        breakdown.append({"winner": k, "count": int(c), "pct": (c / n_runs) * 100.0})
+
+    # Preserve any unexpected winners (so they don't get silently dropped).
+    other_breakdown = []
+    for k, c in counts.items():
+        if k in ordered_keys:
+            continue
+        other_breakdown.append({"winner": k, "count": int(c), "pct": (c / n_runs) * 100.0})
+    other_breakdown.sort(key=lambda r: (-r["pct"], r["winner"]))
+
+    return {
+        "base_url": base_url,
+        "n_runs": int(n_runs),
+        "elapsed_s": elapsed_s,
+        "bad_state": _bad_state_summary(bad_state_count, bad_state_seeds),
+        "breakdown": breakdown,
+        "other_breakdown": other_breakdown,
     }
 
 

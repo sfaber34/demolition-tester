@@ -15,6 +15,7 @@ python3 -m demolition_tester consistency 50 123
 ```
 
 While running, it prints a percent-complete progress line to stderr.
+If any run returns `"completed": false` and `"phase" != "gameover"`, the tools also report a `bad_state` count and the associated seed(s).
 
 Run game time statistics (**N runs** with **random seeds**):
 
@@ -24,6 +25,13 @@ python3 -m demolition_tester gametime 200
 ```
 
 It prints: min, p1, p10, p25, p50, p75, p90, p99, max (all in seconds).
+
+Run winner breakdown (**N runs** with **random seeds**; includes draws when `"winner": null`):
+
+```bash
+python3 -m demolition_tester winrate <n_runs>
+python3 -m demolition_tester winrate 1000
+```
 
 Change the port (pick one):
 
