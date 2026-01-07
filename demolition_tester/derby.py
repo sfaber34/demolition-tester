@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 DEFAULT_HOST = "localhost"
@@ -50,6 +51,33 @@ def _canonical_json(obj: Any) -> str:
     Deterministic string representation for deep equality checks.
     """
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _percentile_linear(sorted_vals: List[float], p: float) -> float:
+    """
+    Linear-interpolated percentile (similar to numpy default).
+    `sorted_vals` must be non-empty and sorted ascending.
+    """
+    if not sorted_vals:
+        raise ValueError("sorted_vals must be non-empty")
+    if p <= 0:
+        return sorted_vals[0]
+    if p >= 100:
+        return sorted_vals[-1]
+    n = len(sorted_vals)
+    if n == 1:
+        return sorted_vals[0]
+    pos = (p / 100.0) * (n - 1)
+    lo = int(pos)
+    hi = min(lo + 1, n - 1)
+    frac = pos - lo
+    return sorted_vals[lo] * (1.0 - frac) + sorted_vals[hi] * frac
+
+
+def _rand_seed_int() -> int:
+    # Use a wide seed space to avoid collisions at high n_runs.
+    # 53 bits keeps the value within JavaScript "safe integer" range if the backend parses as Number.
+    return secrets.randbits(53)
 
 
 @dataclass(frozen=True)
@@ -173,5 +201,83 @@ def test_consistency(
         summary["mismatch_example"] = mismatch_example
 
     return mismatches == 0, summary
+
+
+def gametime_stats(
+    n_runs: int,
+    *,
+    base_url: Optional[str] = None,
+    host: str = DEFAULT_HOST,
+    port: Optional[int] = None,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+    sleep_s: float = 0.0,
+    progress_cb: Optional[Callable[[int, int], None]] = None,
+) -> Dict[str, Any]:
+    """
+    Runs N games with random seeds and returns gameTimeMs statistics.
+
+    Output times are in seconds (float).
+    """
+    if n_runs <= 0:
+        raise ValueError("n_runs must be > 0")
+
+    if base_url is None:
+        base_url = build_base_url(host=host, port=port)
+
+    times_ms: List[float] = []
+    seeds: List[int] = []
+    min_pair: Optional[Tuple[float, int]] = None  # (time_ms, seed)
+    max_pair: Optional[Tuple[float, int]] = None  # (time_ms, seed)
+    start = time.time()
+
+    for i in range(1, n_runs + 1):
+        if sleep_s > 0 and i > 1:
+            time.sleep(sleep_s)
+
+        seed = _rand_seed_int()
+        data = fetch_outcome(seed, base_url=base_url, timeout_s=timeout_s)
+        if "gameTimeMs" not in data:
+            raise RuntimeError(f"Missing 'gameTimeMs' in response for seed={seed}. Keys: {sorted(data.keys())}")
+        try:
+            t_ms = float(data["gameTimeMs"])
+        except (TypeError, ValueError) as e:
+            raise RuntimeError(f"Invalid 'gameTimeMs'={data['gameTimeMs']!r} for seed={seed}") from e
+
+        times_ms.append(t_ms)
+        seeds.append(seed)
+        if min_pair is None or t_ms < min_pair[0]:
+            min_pair = (t_ms, seed)
+        if max_pair is None or t_ms > max_pair[0]:
+            max_pair = (t_ms, seed)
+
+        if progress_cb is not None:
+            progress_cb(i, n_runs)
+
+    elapsed_s = time.time() - start
+    times_s = sorted(t / 1000.0 for t in times_ms)
+    assert min_pair is not None and max_pair is not None
+
+    stats = {
+        "min_s": min_pair[0] / 1000.0,
+        "min_seed": min_pair[1],
+        "p1_s": _percentile_linear(times_s, 1),
+        "p10_s": _percentile_linear(times_s, 10),
+        "p25_s": _percentile_linear(times_s, 25),
+        "p50_s": _percentile_linear(times_s, 50),
+        "p75_s": _percentile_linear(times_s, 75),
+        "p90_s": _percentile_linear(times_s, 90),
+        "p99_s": _percentile_linear(times_s, 99),
+        "max_s": max_pair[0] / 1000.0,
+        "max_seed": max_pair[1],
+    }
+
+    return {
+        "base_url": base_url,
+        "n_runs": int(n_runs),
+        "elapsed_s": elapsed_s,
+        "stats": stats,
+        # helpful for debugging/repro if anything looks odd; keep small-ish
+        "example_seeds": seeds[: min(10, len(seeds))],
+    }
 
 

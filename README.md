@@ -16,6 +16,15 @@ python3 -m demolition_tester consistency 50 123
 
 While running, it prints a percent-complete progress line to stderr.
 
+Run game time statistics (**N runs** with **random seeds**):
+
+```bash
+python3 -m demolition_tester gametime <n_runs>
+python3 -m demolition_tester gametime 200
+```
+
+It prints: min, p1, p10, p25, p50, p75, p90, p99, max (all in seconds).
+
 Change the port (pick one):
 
 ```bash

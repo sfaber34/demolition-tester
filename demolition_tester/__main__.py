@@ -5,7 +5,7 @@ import json
 import os
 import sys
 
-from .derby import DEFAULT_TIMEOUT_S, build_base_url, test_consistency
+from .derby import DEFAULT_TIMEOUT_S, build_base_url, gametime_stats, test_consistency
 
 
 def _env_default(name: str, fallback: str | None = None) -> str | None:
@@ -44,6 +44,30 @@ def main(argv: list[str] | None = None) -> int:
         help="Print JSON summary (machine readable)",
     )
 
+    p_gt = sub.add_parser("gametime", help="Run N games with random seeds and print game time percentiles")
+    p_gt.add_argument("n_runs", type=int, help="Number of runs")
+    p_gt.add_argument("--base-url", default=_env_default("DERBY_BASE_URL"), help="Override full base URL")
+    p_gt.add_argument("--host", default=_env_default("DERBY_HOST", "localhost"), help="Host (default: localhost)")
+    p_gt.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Port (default: env DERBY_PORT or 3000)",
+    )
+    p_gt.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT_S,
+        help=f"HTTP timeout seconds (default: {DEFAULT_TIMEOUT_S:g})",
+    )
+    p_gt.add_argument("--sleep", type=float, default=0.0, help="Sleep seconds between runs (default: 0)")
+    p_gt.add_argument(
+        "--json",
+        dest="as_json",
+        action="store_true",
+        help="Print JSON output (machine readable)",
+    )
+
     args = parser.parse_args(argv)
 
     if args.cmd == "consistency":
@@ -80,6 +104,45 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(summary["mismatch_example"], indent=2, sort_keys=True))
 
         return 0 if ok else 2
+
+    if args.cmd == "gametime":
+        base_url = args.base_url or build_base_url(host=args.host, port=args.port)
+
+        def progress_cb(done: int, total: int) -> None:
+            if total <= 0:
+                return
+            pct = int(round((done / total) * 100))
+            msg = f"\rProgress: {done}/{total} ({pct}%)"
+            print(msg, end="", file=sys.stderr, flush=True)
+
+        out = gametime_stats(
+            args.n_runs,
+            base_url=base_url,
+            timeout_s=args.timeout,
+            sleep_s=args.sleep,
+            progress_cb=None if args.as_json else progress_cb,
+        )
+        if not args.as_json:
+            print("", file=sys.stderr)  # newline after progress line
+
+        if args.as_json:
+            print(json.dumps(out, indent=2, sort_keys=True))
+            return 0
+
+        stats = out["stats"]
+        print(f"base_url={out['base_url']}")
+        print(f"runs={out['n_runs']} elapsed_s={out['elapsed_s']:.3f}")
+        print("game_time_seconds:")
+        print(f"  min  {stats['min_s']:.3f}  seed={stats['min_seed']}")
+        print(f"  p1   {stats['p1_s']:.3f}")
+        print(f"  p10  {stats['p10_s']:.3f}")
+        print(f"  p25  {stats['p25_s']:.3f}")
+        print(f"  p50  {stats['p50_s']:.3f}")
+        print(f"  p75  {stats['p75_s']:.3f}")
+        print(f"  p90  {stats['p90_s']:.3f}")
+        print(f"  p99  {stats['p99_s']:.3f}")
+        print(f"  max  {stats['max_s']:.3f}  seed={stats['max_seed']}")
+        return 0
 
     parser.error("Unknown command")
     return 2
